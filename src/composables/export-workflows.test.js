@@ -232,4 +232,51 @@ describe('submitted export choices', () => {
     await expect(second.save({ autoExportEnabled: true })).rejects.toBe('Database unavailable')
     expect(first.preferences.value.auto_export_enabled).toBe(false)
   })
+
+  it('saves an edited template, and leaves the popup open when the backend rejects it', async () => {
+    const state = await popupState()
+    let config = {
+      skip_tracks_with_synced_lyrics: false,
+      skip_tracks_with_plain_lyrics: false,
+      auto_export_enabled: false,
+      export_txt: false,
+      export_lrc: true,
+      export_template: '{filename}.{ext}',
+    }
+    invoke.mockImplementation(async (command, changes) => {
+      if (command === 'set_export_preferences') {
+        // The backend validates the template; an unknown variable is refused.
+        if ('exportTemplate' in changes && /\{titel\}/.test(changes.exportTemplate)) {
+          throw 'invalid export template: unknown variable {titel}'
+        }
+        // The command takes camelCase and stores snake_case, as `get_config`
+        // returns it.
+        const stored = {}
+        for (const [key, value] of Object.entries(changes)) {
+          stored[key.replace(/[A-Z]/g, c => `_${c.toLowerCase()}`)] = value
+        }
+        config = { ...config, ...stored }
+      }
+      return config
+    })
+
+    await state.openExportOptions()
+    expect(state.exportDraft.value.template).toBe('{filename}.{ext}')
+
+    // A valid edit is saved and the batch starts.
+    state.exportDraft.value.template = '{artist}/{title}.{ext}'
+    await state.handleExportClick()
+    expect(
+      invoke.mock.calls.find(([command]) => command === 'set_export_preferences')
+    ).not.toBeUndefined()
+    expect(state.templateError.value).toBe('')
+
+    // A rejected edit keeps the popup open on its own error, and restores the
+    // text the backend actually holds rather than leaving the typo in place.
+    await state.openExportOptions()
+    state.exportDraft.value.template = '{titel}.{ext}'
+    await state.handleExportClick()
+    expect(state.templateError.value).toContain('unknown variable')
+    expect(state.exportDraft.value.template).toBe('{artist}/{title}.{ext}')
+  })
 })

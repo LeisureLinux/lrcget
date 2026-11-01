@@ -1,3 +1,4 @@
+use crate::export_template::{ensure_extension, ExportTemplate};
 use crate::lyricsfile::ParsedLyricsfile;
 use crate::parser::lrc::parse_lrc;
 use crate::persistent_entities::PersistentTrack;
@@ -9,7 +10,6 @@ use lofty::id3::v2::{
     BinaryFrame, CommentFrame, Frame, FrameId, Id3v2Tag, SyncTextContentType,
     SynchronizedTextFrame, TimestampFormat, UnsynchronizedTextFrame,
 };
-use lofty::mpeg::MpegFile;
 use lofty::TextEncoding;
 use serde::Serialize;
 use std::fs::{remove_file, write};
@@ -77,18 +77,162 @@ pub struct ExportResult {
     pub status: ExportStatus,
 }
 
-/// Build the file path for a lyrics sidecar file
+/// Build the file path for a lyrics sidecar file.
+///
+/// `template` decides the name. The default `{filename}.{ext}` reproduces the
+/// historical `{stem}.{ext}` behaviour, which is why this still exists as a
+/// separate function: the CLI calls it with a path only.
 pub fn build_sidecar_path(track_path: &str, extension: &str) -> Result<PathBuf, ExportError> {
-    let path = Path::new(track_path);
-    let parent_path = path
-        .parent()
-        .ok_or_else(|| ExportError::PathBuildError("Track has no parent directory".to_string()))?;
-    let file_stem = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .ok_or_else(|| ExportError::PathBuildError("Invalid track filename".to_string()))?;
+    build_sidecar_path_for_track(&path_only_track(track_path), extension, &ExportTemplate::default())
+}
 
-    Ok(parent_path.join(format!("{}.{}", file_stem, extension)))
+/// Resolve a sidecar path for a real library track through a template.
+///
+/// The template is relative and the result is resolved against the audio file's
+/// own directory, so a template can only ever place the sidecar beside the
+/// track (or in a subfolder of it) — never somewhere else in the filesystem.
+pub fn build_sidecar_path_for_track(
+    track: &PersistentTrack,
+    extension: &str,
+    template: &ExportTemplate,
+) -> Result<PathBuf, ExportError> {
+    let vars = crate::export_template::TemplateVars::from_track(track);
+    let relative = template
+        .resolve(&vars, extension)
+        .map_err(|err| ExportError::PathBuildError(err.to_string()))?;
+
+    let parent = Path::new(&track.file_path)
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .ok_or_else(|| {
+            ExportError::PathBuildError("Track has no parent directory".to_string())
+        })?;
+
+    Ok(ensure_extension(parent.join(relative), extension))
+}
+
+/// A `PersistentTrack` carrying only a path, for the path-only helpers.
+///
+/// The template reads metadata off a track, but `build_sidecar_path` is called
+/// with a path and an extension only — from the CLI, and from the tests. Every
+/// field the template could use is empty here, so a template that needs real
+/// metadata fails with an empty-name error instead of inventing values.
+fn path_only_track(track_path: &str) -> PersistentTrack {
+    PersistentTrack {
+        id: 0,
+        file_path: track_path.to_owned(),
+        file_name: Path::new(track_path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default()
+            .to_owned(),
+        title: String::new(),
+        album_name: String::new(),
+        album_artist_name: None,
+        album_id: 0,
+        artist_name: String::new(),
+        artist_id: 0,
+        image_path: None,
+        track_number: None,
+        txt_lyrics: None,
+        lrc_lyrics: None,
+        lyricsfile: None,
+        lyricsfile_id: None,
+        duration: 0.0,
+        instrumental: false,
+    }
+}
+
+/// A resolved sidecar path plus what the export would do to it.
+///
+/// Returned by [`plan_export`] and never written to. This is the dry-run: the
+/// same decisions the real export makes, without the writes.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportPlan {
+    pub format: ExportFormat,
+    /// Where the file would be written. `None` when the format is skipped.
+    pub path: Option<PathBuf>,
+    /// What would happen, in words a user can act on.
+    pub action: String,
+}
+
+/// What an export intends to do, without doing it.
+///
+/// The real export path is destructive in a way no rollback can undo: a sidecar
+/// is written *and the opposite extension is deleted first*, so a failure
+/// halfway through a batch leaves the user with fewer files than they started
+/// with. Running the plan first turns that from a surprise into a decision.
+pub fn plan_export(
+    track: &PersistentTrack,
+    parsed: &ParsedLyricsfile,
+    formats: &[ExportFormat],
+    template: &ExportTemplate,
+) -> Vec<ExportPlan> {
+    let mut plans = Vec::with_capacity(formats.len());
+
+    for format in formats {
+        match content_for_format(track, parsed, *format) {
+            Some((_, extension)) => match *format {
+                // There is no sidecar for embedding: the audio file itself is
+                // what gets rewritten, so that is what the plan points at.
+                ExportFormat::Embedded => plans.push(ExportPlan {
+                    format: *format,
+                    path: Some(PathBuf::from(&track.file_path)),
+                    action: "embed into the audio file".to_owned(),
+                }),
+                _ => {
+                    let sidecar = planned_sidecar(track, template, extension);
+                    let action = match conflicting_sidecar(&sidecar, extension) {
+                        Some(other) => format!(
+                            "write {}, replacing {}",
+                            sidecar.display(),
+                            other.display()
+                        ),
+                        None => format!("write {}", sidecar.display()),
+                    };
+                    plans.push(ExportPlan {
+                        format: *format,
+                        path: Some(sidecar),
+                        action,
+                    });
+                }
+            },
+            None => plans.push(ExportPlan {
+                format: *format,
+                path: None,
+                action: skip_reason(parsed, *format),
+            }),
+        }
+    }
+
+    plans
+}
+
+/// Where a sidecar would land, for the plan.
+///
+/// A template that cannot be resolved is not fatal to the plan — the real
+/// export fails the same way, and the plan is where the user should learn about
+/// it. Falling back to the audio file keeps the entry present.
+fn planned_sidecar(track: &PersistentTrack, template: &ExportTemplate, extension: &str) -> PathBuf {
+    let path = build_sidecar_path_for_track(track, extension, template)
+        .unwrap_or_else(|_| PathBuf::from(&track.file_path));
+    ensure_extension(path, extension)
+}
+
+/// The other sidecar that gets removed when a sidecar is written.
+///
+/// This mirrors real behaviour, which is deliberate: writing `.lrc` and leaving
+/// `.txt` behind means two files disagreeing about the same lyrics, and most
+/// players read whichever they find first.
+fn conflicting_sidecar(sidecar: &Path, extension: &str) -> Option<PathBuf> {
+    let other = match extension {
+        "txt" => "lrc",
+        "lrc" => "txt",
+        _ => return None,
+    };
+    let candidate = sidecar.with_extension(other);
+    candidate.exists().then_some(candidate)
 }
 
 /// Generate plain text lyrics content from parsed lyricsfile
@@ -118,19 +262,97 @@ pub fn export_track_format(
     parsed: &ParsedLyricsfile,
     format: ExportFormat,
 ) -> Result<ExportResult, ExportError> {
+    export_track_format_with_template(track, parsed, format, &ExportTemplate::default())
+}
+
+/// The content a format would write, and the extension it writes it with.
+///
+/// Shared by the plan and the real export so the two cannot disagree about
+/// whether a format has anything to write.
+fn content_for_format(
+    track: &PersistentTrack,
+    parsed: &ParsedLyricsfile,
+    format: ExportFormat,
+) -> Option<(String, &'static str)> {
     match format {
-        ExportFormat::Txt => export_txt(track, parsed),
-        ExportFormat::Lrc => export_lrc(track, parsed),
-        ExportFormat::LrcA2 => export_word_synced(track, parsed, true),
-        ExportFormat::Ttml => export_word_synced(track, parsed, false),
+        ExportFormat::Txt => generate_txt_content(parsed).map(|c| (c, "txt")),
+        ExportFormat::Lrc => generate_lrc_content(parsed).map(|c| (c, "lrc")),
+        ExportFormat::Embedded => Some((String::new(), "")),
+        ExportFormat::LrcA2 => word_synced_lines(parsed)
+            .map(|lines| (crate::word_sync::to_enhanced_lrc(&lines), "alrc")),
+        ExportFormat::Ttml => word_synced_lines(parsed).map(|lines| {
+            (
+                crate::word_sync::to_ttml(
+                    &lines,
+                    &track.title,
+                    &track.artist_name,
+                    &track.album_name,
+                ),
+                "ttml",
+            )
+        }),
+    }
+}
+
+/// Why a format has nothing to write, in words.
+fn skip_reason(parsed: &ParsedLyricsfile, format: ExportFormat) -> String {
+    if parsed.is_instrumental {
+        return "instrumental track".to_owned();
+    }
+    match format {
+        ExportFormat::Txt => "no plain lyrics available".to_owned(),
+        ExportFormat::Embedded => "unsupported audio format (MP3/FLAC only)".to_owned(),
+        _ => "no timed lyrics to export".to_owned(),
+    }
+}
+
+/// The word-timing lines, or `None` when there is nothing to time.
+fn word_synced_lines(parsed: &ParsedLyricsfile) -> Option<Vec<crate::word_sync::WordSyncLine>> {
+    if parsed.is_instrumental {
+        return None;
+    }
+    let synced = parsed.synced_lyrics.clone().filter(|s| !s.trim().is_empty())?;
+    crate::word_sync::build_word_sync(&synced)
+}
+
+/// Export lyrics for a single track in the specified format, through a template.
+pub fn export_track_format_with_template(
+    track: &PersistentTrack,
+    parsed: &ParsedLyricsfile,
+    format: ExportFormat,
+    template: &ExportTemplate,
+) -> Result<ExportResult, ExportError> {
+    match format {
+        ExportFormat::Txt => export_txt(track, parsed, template),
+        ExportFormat::Lrc => export_lrc(track, parsed, template),
+        ExportFormat::LrcA2 => export_word_synced(track, parsed, true, template),
+        ExportFormat::Ttml => export_word_synced(track, parsed, false, template),
         ExportFormat::Embedded => export_embedded(track, parsed),
     }
+}
+
+/// Write a sidecar, creating the directories the template asked for.
+///
+/// A template may place lyrics in a subfolder of the track's directory
+/// (`{artist}/{title}.lrc`), and that folder is not guaranteed to exist yet.
+/// Creating it here rather than in `build_sidecar_path_for_track` keeps path
+/// resolution pure — the plan must be able to name a path without creating
+/// anything on disk.
+fn write_sidecar(path: &Path, content: &str) -> Result<(), ExportError> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| ExportError::WriteError(format!("creating {}: {e}", parent.display())))?;
+        }
+    }
+    write(path, content).map_err(|e| ExportError::WriteError(e.to_string()))
 }
 
 /// Export plain text lyrics to .txt file
 fn export_txt(
     track: &PersistentTrack,
     parsed: &ParsedLyricsfile,
+    template: &ExportTemplate,
 ) -> Result<ExportResult, ExportError> {
     let content = match generate_txt_content(parsed) {
         Some(content) => content,
@@ -144,15 +366,15 @@ fn export_txt(
         }
     };
 
-    let txt_path = build_sidecar_path(&track.file_path, "txt")?;
+    let txt_path = build_sidecar_path_for_track(track, "txt", template)?;
 
     // Remove conflicting .lrc file if it exists
-    let lrc_path = build_sidecar_path(&track.file_path, "lrc").ok();
+    let lrc_path = build_sidecar_path_for_track(track, "lrc", template).ok();
     if let Some(ref lrc_path) = lrc_path {
         let _ = remove_file(lrc_path);
     }
 
-    write(&txt_path, content).map_err(|e| ExportError::WriteError(e.to_string()))?;
+    write_sidecar(&txt_path, &content)?;
 
     Ok(ExportResult {
         format: ExportFormat::Txt,
@@ -165,6 +387,7 @@ fn export_txt(
 fn export_lrc(
     track: &PersistentTrack,
     parsed: &ParsedLyricsfile,
+    template: &ExportTemplate,
 ) -> Result<ExportResult, ExportError> {
     let content = match generate_lrc_content(parsed) {
         Some(content) => content,
@@ -178,15 +401,15 @@ fn export_lrc(
         }
     };
 
-    let lrc_path = build_sidecar_path(&track.file_path, "lrc")?;
+    let lrc_path = build_sidecar_path_for_track(track, "lrc", template)?;
 
     // Remove conflicting .txt file if it exists
-    let txt_path = build_sidecar_path(&track.file_path, "txt").ok();
+    let txt_path = build_sidecar_path_for_track(track, "txt", template).ok();
     if let Some(ref txt_path) = txt_path {
         let _ = remove_file(txt_path);
     }
 
-    write(&lrc_path, content).map_err(|e| ExportError::WriteError(e.to_string()))?;
+    write_sidecar(&lrc_path, &content)?;
 
     Ok(ExportResult {
         format: ExportFormat::Lrc,
@@ -205,6 +428,7 @@ fn export_word_synced(
     track: &PersistentTrack,
     parsed: &ParsedLyricsfile,
     enhanced_lrc: bool,
+    template: &ExportTemplate,
 ) -> Result<ExportResult, ExportError> {
     let format = if enhanced_lrc {
         ExportFormat::LrcA2
@@ -256,8 +480,8 @@ fn export_word_synced(
         )
     };
 
-    let path = build_sidecar_path(&track.file_path, extension)?;
-    write(&path, content).map_err(|e| ExportError::WriteError(e.to_string()))?;
+    let path = build_sidecar_path_for_track(track, extension, template)?;
+    write_sidecar(&path, &content)?;;
 
     Ok(ExportResult {
         format,
@@ -302,7 +526,17 @@ pub fn export_track(
     parsed: &ParsedLyricsfile,
     formats: &[ExportFormat],
 ) -> Vec<ExportResult> {
-    export_track_with_embed_gate(track, parsed, formats, || true)
+    export_track_with_template(track, parsed, formats, &ExportTemplate::default())
+}
+
+/// Export lyrics for a track in multiple formats, through a template.
+pub fn export_track_with_template(
+    track: &PersistentTrack,
+    parsed: &ParsedLyricsfile,
+    formats: &[ExportFormat],
+    template: &ExportTemplate,
+) -> Vec<ExportResult> {
+    export_track_with_embed_gate(track, parsed, formats, template, || true)
 }
 
 /// Consult the current experimental setting at each embedded operation, not at batch creation.
@@ -310,6 +544,7 @@ pub fn export_track_with_embed_gate(
     track: &PersistentTrack,
     parsed: &ParsedLyricsfile,
     formats: &[ExportFormat],
+    template: &ExportTemplate,
     mut embed_allowed: impl FnMut() -> bool,
 ) -> Vec<ExportResult> {
     let mut results = Vec::with_capacity(formats.len());
@@ -325,7 +560,7 @@ pub fn export_track_with_embed_gate(
             });
             continue;
         }
-        match export_track_format(track, parsed, *format) {
+        match export_track_format_with_template(track, parsed, *format, template) {
             Ok(result) => results.push(result),
             Err(e) => results.push(ExportResult {
                 format: *format,
@@ -522,6 +757,139 @@ mod tests {
             txt.file_name().unwrap().to_str().unwrap(),
             "01. Song.txt"
         );
+    }
+
+    fn library_track(path: &str) -> PersistentTrack {
+        PersistentTrack {
+            id: 7,
+            file_path: path.to_owned(),
+            file_name: "Song.mp3".to_owned(),
+            title: "Song".to_owned(),
+            album_name: "Album".to_owned(),
+            album_artist_name: None,
+            album_id: 1,
+            artist_name: "Artist".to_owned(),
+            artist_id: 1,
+            image_path: None,
+            track_number: Some(3),
+            txt_lyrics: None,
+            lrc_lyrics: None,
+            lyricsfile: None,
+            lyricsfile_id: None,
+            duration: 200.0,
+            instrumental: false,
+        }
+    }
+
+    #[test]
+    fn a_track_sidecar_follows_the_template() {
+        let template = ExportTemplate::parse("{artist}/{title}.{ext}").unwrap();
+        let path =
+            build_sidecar_path_for_track(&library_track("/music/Artist/Album/Song.mp3"), "lrc", &template)
+                .unwrap();
+        assert_eq!(path, Path::new("/music/Artist/Album/Artist/Song.lrc"));
+    }
+
+    #[test]
+    fn a_template_that_makes_a_subfolder_writes_into_it() {
+        // The path resolver must not create anything: it is used by the plan,
+        // which has to be side-effect free. The writer creates the directory.
+        let dir = std::env::temp_dir().join("sa-template-subfolder");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let track_path = dir.join("Song.mp3");
+        std::fs::write(&track_path, b"not really audio").unwrap();
+
+        let template = ExportTemplate::parse("lyrics/{title}.{ext}").unwrap();
+        let resolved =
+            build_sidecar_path_for_track(&library_track(track_path.to_str().unwrap()), "lrc", &template)
+                .unwrap();
+        assert_eq!(resolved, dir.join("lyrics/Song.lrc"));
+        assert!(!dir.join("lyrics").exists(), "resolving must not create anything");
+
+        let parsed = ParsedLyricsfile {
+            plain_lyrics: Some("words".to_owned()),
+            synced_lyrics: Some("[00:01.00]words".to_owned()),
+            is_instrumental: false,
+        };
+        let results = export_track_with_template(
+            &library_track(track_path.to_str().unwrap()),
+            &parsed,
+            &[ExportFormat::Lrc],
+            &template,
+        );
+        assert!(matches!(results[0].status, ExportStatus::Success), "{results:?}");
+        assert_eq!(std::fs::read_to_string(&resolved).unwrap(), "[00:01.00]words");
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_template_cannot_write_outside_the_tracks_directory() {
+        // The path is joined onto the audio file's parent, so a `..` in the
+        // template must be refused rather than resolving somewhere else.
+        let template = ExportTemplate::parse("../{title}").unwrap();
+        let err = build_sidecar_path_for_track(
+            &library_track("/music/Artist/Album/Song.mp3"),
+            "lrc",
+            &template,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ExportError::PathBuildError(_)));
+    }
+
+    #[test]
+    fn the_plan_names_the_file_the_export_would_write() {
+        let template = ExportTemplate::parse("{artist}/{title}.{ext}").unwrap();
+        let parsed = ParsedLyricsfile {
+            plain_lyrics: Some("words".to_owned()),
+            synced_lyrics: Some("[00:01.00]words".to_owned()),
+            is_instrumental: false,
+        };
+        let plans = plan_export(
+            &library_track("/music/Artist/Album/Song.mp3"),
+            &parsed,
+            &[ExportFormat::Lrc],
+            &template,
+        );
+        assert_eq!(plans.len(), 1);
+        assert_eq!(
+            plans[0].path.as_deref(),
+            Some(Path::new("/music/Artist/Album/Artist/Song.lrc"))
+        );
+        // Nothing was written by planning.
+        assert!(!plans[0].path.as_deref().unwrap().exists());
+    }
+
+    #[test]
+    fn the_plan_reports_a_skip_instead_of_a_path() {
+        let parsed = ParsedLyricsfile {
+            plain_lyrics: None,
+            synced_lyrics: None,
+            is_instrumental: true,
+        };
+        let plans = plan_export(
+            &library_track("/music/Artist/Album/Song.mp3"),
+            &parsed,
+            &[ExportFormat::Lrc],
+            &ExportTemplate::default(),
+        );
+        assert_eq!(plans.len(), 1);
+        // An instrumental track still writes an LRC: the marker is the content,
+        // which is what tells a player there is nothing to sing. Nothing was
+        // written by planning.
+        assert_eq!(plans[0].path.as_deref(), Some(Path::new("/music/Artist/Album/Song.lrc")));
+        assert!(!plans[0].path.as_deref().unwrap().exists());
+
+        // A word-level format has no such marker, so it skips.
+        let plans = plan_export(
+            &library_track("/music/Artist/Album/Song.mp3"),
+            &parsed,
+            &[ExportFormat::Ttml],
+            &ExportTemplate::default(),
+        );
+        assert!(plans[0].path.is_none());
+        assert_eq!(plans[0].action, "instrumental track");
     }
 
     #[test]

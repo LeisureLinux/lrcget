@@ -154,6 +154,12 @@ export default {
     wordNone: 'Không xuất theo từng từ',
     a2: 'Enhanced LRC / A2 (.alrc) — Android',
     ttml: 'TTML (.ttml) — iOS',
+    fileName: 'Tên tệp',
+    fileNamePlaceholder: 'ví dụ {artist}/{title}.{ext}',
+    fileNameHint: 'Biến: {title} {artist} {album} {album_artist} {track_number} {filename} {ext}. Thêm _sanitized để thay thế ký tự không hợp lệ. Dùng / để tạo thư mục.',
+    dryRun: 'Chỉ xem trước — hiển thị những gì sẽ được ghi, không ghi gì cả',
+    dryRunHint: 'Hiển thị những gì sẽ xảy ra, không ghi cũng không xóa gì. Mỗi lần ghi sẽ xóa phần mở rộng còn lại trước, nên đây là cách kiểm tra trước khi chạy theo lô.',
+    preview: 'Xem trước',
   },
 
   downloadOptions: {

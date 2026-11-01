@@ -158,6 +158,12 @@ export default {
     wordNone: 'Не експортувати послівно',
     a2: 'Enhanced LRC / A2 (.alrc) — Android',
     ttml: 'TTML (.ttml) — iOS',
+    fileName: 'Назва файлу',
+    fileNamePlaceholder: 'напр. {artist}/{title}.{ext}',
+    fileNameHint: 'Змінні: {title} {artist} {album} {album_artist} {track_number} {filename} {ext}. Додайте _sanitized, щоб замінити неприпустимі символи. Теки — через /.',
+    dryRun: 'Лише попередній перегляд — показати, що буде записано, нічого не записувати',
+    dryRunHint: 'Показує, що станеться, не записуючи й не видаляючи нічого. Кожен запис спершу видаляє інше розширення, тому це дає перевірити перед пакетом.',
+    preview: 'Попередній перегляд',
   },
 
   downloadOptions: {

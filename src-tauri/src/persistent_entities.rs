@@ -119,4 +119,10 @@ pub struct PersistentConfig {
     pub ytdlp_cookies_json: String,
     /// Where the downloads land. Empty means the first watched directory.
     pub ytdlp_output_dir: String,
+    /// The filename template sidecar exports are written with.
+    ///
+    /// A relative path with `{variable}` placeholders, resolved against the
+    /// audio file's own directory. Empty means the default `{filename}.{ext}`,
+    /// which is the historical behaviour.
+    pub export_template: String,
 }

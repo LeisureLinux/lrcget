@@ -1,0 +1,11 @@
+-- The filename template sidecar exports are written with.
+--
+-- A relative path with {variable} placeholders, resolved against the audio
+-- file's own directory, so a template can only ever place a sidecar beside the
+-- track (or in a subfolder of it). Empty means the default {filename}.{ext},
+-- which is the behaviour that was hardcoded before this column existed.
+--
+-- Validated on write rather than on read: a template that cannot be parsed or
+-- that escapes the track's directory is refused at the point of entry, instead
+-- of failing on the fiftieth track of a batch.
+ALTER TABLE config_data ADD COLUMN export_template TEXT NOT NULL DEFAULT '';

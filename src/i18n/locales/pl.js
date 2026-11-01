@@ -157,6 +157,12 @@ export default {
     wordNone: 'Nie eksportuj słowo po słowie',
     a2: 'Enhanced LRC / A2 (.alrc) — Android',
     ttml: 'TTML (.ttml) — iOS',
+    fileName: 'Nazwa pliku',
+    fileNamePlaceholder: 'np. {artist}/{title}.{ext}',
+    fileNameHint: 'Zmienne: {title} {artist} {album} {album_artist} {track_number} {filename} {ext}. Dodaj _sanitized, aby zamienić niedozwolone znaki. Katalogi tworzy się przez /.',
+    dryRun: 'Tylko podgląd — pokaż, co zostałoby zapisane, nic nie zapisuj',
+    dryRunHint: 'Pokazuje, co by się stało, bez zapisywania i usuwania. Każdy zapis najpierw usuwa drugie rozszerzenie, więc tak można to sprawdzić przed partią.',
+    preview: 'Podgląd',
   },
 
   downloadOptions: {

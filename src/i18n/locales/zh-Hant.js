@@ -150,6 +150,12 @@ export default {
     wordNone: '不匯出逐詞歌詞',
     a2: '增強型 LRC / A2（.alrc）— Android',
     ttml: 'TTML（.ttml）— iOS',
+    fileName: '檔案名稱',
+    fileNamePlaceholder: '例如 {artist}/{title}.{ext}',
+    fileNameHint: '變數：{title} {artist} {album} {album_artist} {track_number} {filename} {ext}。變數名稱後加 _sanitized 可取代檔案系統不接受的字元。用 / 建立子目錄。',
+    dryRun: '僅預覽——顯示會寫入什麼，不實際寫入',
+    dryRunHint: '顯示會發生什麼，不寫入也不刪除任何檔案。寫入歌詞檔案會先刪除另一種副檔名，所以在批量執行前先檢查。',
+    preview: '預覽',
   },
 
   downloadOptions: {

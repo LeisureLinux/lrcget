@@ -320,7 +320,8 @@ pub fn get_config(db: &Connection) -> Result<PersistentConfig> {
         amll_db_url,
         ytdlp_binary,
         ytdlp_cookies_json,
-        ytdlp_output_dir
+        ytdlp_output_dir,
+        export_template
       FROM config_data
       LIMIT 1
     "})?;
@@ -340,6 +341,7 @@ pub fn get_config(db: &Connection) -> Result<PersistentConfig> {
             ytdlp_binary: r.get("ytdlp_binary")?,
             ytdlp_cookies_json: r.get("ytdlp_cookies_json")?,
             ytdlp_output_dir: r.get("ytdlp_output_dir")?,
+            export_template: r.get("export_template")?,
             skip_tracks_with_synced_lyrics: r.get("skip_tracks_with_synced_lyrics")?,
             skip_tracks_with_plain_lyrics: r.get("skip_tracks_with_plain_lyrics")?,
             show_line_count: r.get("show_line_count")?,
@@ -367,6 +369,7 @@ pub fn set_config(
     ytdlp_binary: &str,
     ytdlp_cookies_json: &str,
     ytdlp_output_dir: &str,
+    export_template: &str,
     db: &Connection,
 ) -> Result<()> {
     let mut statement = db.prepare(indoc! {"
@@ -385,7 +388,8 @@ pub fn set_config(
         amll_db_url = ?,
         ytdlp_binary = ?,
         ytdlp_cookies_json = ?,
-        ytdlp_output_dir = ?
+        ytdlp_output_dir = ?,
+        export_template = ?
       WHERE 1
     "})?;
     statement.execute((
@@ -403,6 +407,7 @@ pub fn set_config(
         ytdlp_binary,
         ytdlp_cookies_json,
         ytdlp_output_dir,
+        export_template,
     ))?;
     Ok(())
 }
@@ -415,6 +420,7 @@ pub fn set_export_preferences(
     export_embedded: Option<bool>,
     skip_tracks_with_synced_lyrics: Option<bool>,
     skip_tracks_with_plain_lyrics: Option<bool>,
+    export_template: Option<&str>,
     db: &Connection,
 ) -> Result<()> {
     let config = get_config(db)?;
@@ -428,6 +434,17 @@ pub fn set_export_preferences(
     {
         anyhow::bail!("Select at least one enabled export format");
     }
+
+    // The template is checked here so a bad one is refused at the point of
+    // entry. `set_config` writes it too, but the settings panel is where a user
+    // types it, and that is where the mistake is worth catching.
+    if let Some(raw) = export_template {
+        if !raw.trim().is_empty() {
+            crate::export_template::ExportTemplate::parse(raw)
+                .map_err(|err| anyhow::anyhow!("invalid export template: {err}"))?;
+        }
+    }
+
     db.execute(
         "UPDATE config_data SET
             auto_export_enabled = COALESCE(?1, auto_export_enabled),
@@ -435,7 +452,8 @@ pub fn set_export_preferences(
             export_txt = COALESCE(?3, export_txt),
             export_embedded = COALESCE(?4, export_embedded),
             skip_tracks_with_synced_lyrics = COALESCE(?5, skip_tracks_with_synced_lyrics),
-            skip_tracks_with_plain_lyrics = COALESCE(?6, skip_tracks_with_plain_lyrics)",
+            skip_tracks_with_plain_lyrics = COALESCE(?6, skip_tracks_with_plain_lyrics),
+            export_template = COALESCE(?7, export_template)",
         (
             auto_export_enabled,
             export_lrc,
@@ -443,6 +461,7 @@ pub fn set_export_preferences(
             export_embedded,
             skip_tracks_with_synced_lyrics,
             skip_tracks_with_plain_lyrics,
+            export_template,
         ),
     )?;
     Ok(())
@@ -2585,7 +2604,7 @@ mod export_preferences_tests {
             Some(true),
             None,
             None,
-            &conn,
+            None, &conn,
         )
         .unwrap();
         let config = get_config(&conn).unwrap();
@@ -2603,7 +2622,7 @@ mod export_preferences_tests {
                 Some(true),
                 Some(false),
                 Some(false),
-                &conn
+                None, &conn
             )
             .is_err());
         }
@@ -2615,11 +2634,11 @@ mod export_preferences_tests {
             Some(false),
             None,
             None,
-            &conn,
+            None, &conn,
         )
         .unwrap();
         assert!(get_config(&conn).unwrap().export_embedded);
-        set_export_preferences(Some(false), None, None, Some(false), None, None, &conn).unwrap();
+        set_export_preferences(Some(false), None, None, Some(false), None, None, None, &conn).unwrap();
         assert!(get_config(&conn).unwrap().export_embedded);
     }
 
@@ -2645,16 +2664,16 @@ mod export_preferences_tests {
             "",
             "",
             "",
-            &conn,
+            "", &conn,
         )
         .unwrap();
-        set_export_preferences(None, Some(true), Some(true), Some(true), None, None, &conn)
+        set_export_preferences(None, Some(true), Some(true), Some(true), None, None, None, &conn)
             .unwrap();
 
         for (skip_synced, skip_plain) in [(false, false), (true, false), (true, true)] {
             // Download off preserves formats while atomically saving the submitted filter.
             set_export_preferences(
-                Some(false), None, None, None, Some(skip_synced), Some(skip_plain), &conn,
+                Some(false), None, None, None, Some(skip_synced), Some(skip_plain), None, &conn,
             )
             .unwrap();
             let config = get_config(&conn).unwrap();
@@ -2668,7 +2687,7 @@ mod export_preferences_tests {
             assert_eq!(config.volume, 0.4);
 
             // Manual Export omits both flags and must leave the Download filter alone.
-            set_export_preferences(None, Some(true), None, None, None, None, &conn).unwrap();
+            set_export_preferences(None, Some(true), None, None, None, None, None, &conn).unwrap();
             let config = get_config(&conn).unwrap();
             assert_eq!(config.skip_tracks_with_synced_lyrics, skip_synced);
             assert_eq!(config.skip_tracks_with_plain_lyrics, skip_plain);
@@ -2707,11 +2726,11 @@ mod export_preferences_tests {
         assert_eq!(count, 1);
 
         // Manual Export shares formats but does not touch the Download toggle.
-        set_export_preferences(Some(true), None, None, None, None, None, &conn).unwrap();
-        set_export_preferences(None, Some(false), Some(true), Some(true), None, None, &conn).unwrap();
+        set_export_preferences(Some(true), None, None, None, None, None, None, &conn).unwrap();
+        set_export_preferences(None, Some(false), Some(true), Some(true), None, None, None, &conn).unwrap();
         assert!(get_config(&conn).unwrap().auto_export_enabled);
         // Turning auto-export off preserves formats, including hidden embedded selection.
-        set_export_preferences(Some(false), None, None, None, None, None, &conn).unwrap();
+        set_export_preferences(Some(false), None, None, None, None, None, None, &conn).unwrap();
         // Ordinary Settings writes leave all export preferences alone.
         set_config(
             false,
@@ -2728,7 +2747,7 @@ mod export_preferences_tests {
             "",
             "",
             "",
-            &conn,
+            "", &conn,
         )
         .unwrap();
         let config = get_config(&conn).unwrap();
@@ -2856,6 +2875,60 @@ mod duplicate_tests {
         assert_ne!(
             normalise_for_comparison("城裡的月光"),
             normalise_for_comparison("城裡的太陽")
+        );
+    }
+
+    #[test]
+    fn the_export_template_is_stored_and_validated() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        Migrations::from_directory(&MIGRATIONS_DIR)
+            .unwrap()
+            .to_latest(&mut conn)
+            .unwrap();
+
+        // The default is empty, which means the historical `{stem}.{ext}`.
+        assert_eq!(get_config(&conn).unwrap().export_template, "");
+
+        // A valid template is stored.
+        set_export_preferences(None, None, None, None, None, None, Some("{artist}/{title}.{ext}"), &conn)
+            .unwrap();
+        assert_eq!(
+            get_config(&conn).unwrap().export_template,
+            "{artist}/{title}.{ext}"
+        );
+
+        // An unknown variable is refused, so a typo is caught at the point of
+        // entry rather than on the fiftieth track of a batch.
+        assert!(set_export_preferences(
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("{titel}.{ext}"),
+            &conn
+        )
+        .is_err());
+        // ...and the stored value survives the rejected write.
+        assert_eq!(
+            get_config(&conn).unwrap().export_template,
+            "{artist}/{title}.{ext}"
+        );
+
+        // An empty template means "use the default", and is accepted.
+        set_export_preferences(None, None, None, None, None, None, Some(""), &conn).unwrap();
+        assert_eq!(get_config(&conn).unwrap().export_template, "");
+
+        // `set_config` writes it alongside everything else.
+        set_config(
+            false, false, false, false, "dark", "", 0.5, false, "", false, "", "", "", "",
+            "{filename}.{ext}", &conn,
+        )
+        .unwrap();
+        assert_eq!(
+            get_config(&conn).unwrap().export_template,
+            "{filename}.{ext}"
         );
     }
 }

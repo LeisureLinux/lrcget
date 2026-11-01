@@ -154,6 +154,12 @@ export default {
     wordNone: 'Jangan ekspor per kata',
     a2: 'Enhanced LRC / A2 (.alrc) — Android',
     ttml: 'TTML (.ttml) — iOS',
+    fileName: 'Nama berkas',
+    fileNamePlaceholder: 'mis. {artist}/{title}.{ext}',
+    fileNameHint: 'Variabel: {title} {artist} {album} {album_artist} {track_number} {filename} {ext}. Tambahkan _sanitized untuk mengganti karakter yang tidak diizinkan. Folder memakai /.',
+    dryRun: 'Hanya pratinjau — tampilkan apa yang akan ditulis, jangan tulis apa pun',
+    dryRunHint: 'Menampilkan apa yang akan terjadi, tanpa menulis atau menghapus apa pun. Setiap penulisan menghapus ekstensi lain lebih dulu, jadi ini cara memeriksanya sebelum proses massal.',
+    preview: 'Pratinjau',
   },
 
   downloadOptions: {

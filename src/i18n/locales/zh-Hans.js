@@ -150,6 +150,12 @@ export default {
     wordNone: '不导出逐词歌词',
     a2: '增强型 LRC / A2（.alrc）— Android',
     ttml: 'TTML（.ttml）— iOS',
+    fileName: '文件名',
+    fileNamePlaceholder: '例如 {artist}/{title}.{ext}',
+    fileNameHint: '变量：{title} {artist} {album} {album_artist} {track_number} {filename} {ext}。变量名后加 _sanitized 可替换文件系统不接受的字符。用 / 建立子目录。',
+    dryRun: '仅预览——显示会写入什么，不实际写入',
+    dryRunHint: '显示会发生什么，不写入也不删除任何文件。写入歌词文件会先删除另一种扩展名，所以在批量执行前先检查。',
+    preview: '预览',
   },
 
   downloadOptions: {

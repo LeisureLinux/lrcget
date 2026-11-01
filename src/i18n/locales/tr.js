@@ -158,6 +158,12 @@ export default {
     wordNone: 'Kelime kelime aktarma',
     a2: 'Enhanced LRC / A2 (.alrc) — Android',
     ttml: 'TTML (.ttml) — iOS',
+    fileName: 'Dosya adı',
+    fileNamePlaceholder: 'örn. {artist}/{title}.{ext}',
+    fileNameHint: 'Değişkenler: {title} {artist} {album} {album_artist} {track_number} {filename} {ext}. Geçersiz karakterleri değiştirmek için sonuna _sanitized ekleyin. Klasörler / ile oluşur.',
+    dryRun: 'Yalnızca önizleme — ne yazılacağını göster, hiçbir şey yazma',
+    dryRunHint: 'Ne olacağını gösterir, hiçbir şey yazmaz veya silmez. Her yazma işlemi önce diğer uzantıyı siler, böylece toplu işlemden önce kontrol edilebilir.',
+    preview: 'Önizleme',
   },
 
   downloadOptions: {

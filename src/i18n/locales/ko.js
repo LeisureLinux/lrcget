@@ -154,6 +154,12 @@ export default {
     wordNone: '단어 단위로 내보내지 않음',
     a2: 'Enhanced LRC / A2(.alrc) — Android',
     ttml: 'TTML(.ttml) — iOS',
+    fileName: '파일 이름',
+    fileNamePlaceholder: '예: {artist}/{title}.{ext}',
+    fileNameHint: '변수: {title} {artist} {album} {album_artist} {track_number} {filename} {ext}. 이름 뒤에 _sanitized 를 붙이면 파일 시스템에서 쓸 수 없는 문자를 바꿉니다. 폴더는 / 로 만듭니다.',
+    dryRun: '미리보기만 — 무엇이 써질지 보여주고 쓰지는 않음',
+    dryRunHint: '무엇이 일어날지 보여줍니다. 아무것도 쓰거나 지우지 않습니다. 가사 파일을 쓸 때 반대 확장자를 먼저 지우므로, 일괄 실행 전에 확인할 수 있습니다.',
+    preview: '미리보기',
   },
 
   downloadOptions: {

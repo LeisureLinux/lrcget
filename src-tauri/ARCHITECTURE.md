@@ -36,6 +36,7 @@ src-tauri/
 │   │   └── lrc.rs           # LRC lyrics parser (replaces lrc crate)
 │   ├── word_segmentation.rs # Charabia-based tokenization + separator-merging logic/tests
 │   ├── export.rs            # Manual sidecar/embed export helpers
+│   ├── export_template.rs   # Filename templates for sidecar exports
 │   ├── lyricsfile.rs        # YAML lyricsfile helpers
 │   ├── player.rs            # Kira audio playback
 │   ├── persistent_entities.rs # Track/Album/Artist structs
@@ -234,31 +235,58 @@ Queue transitions go through `start_queued_track`, which uses `play()` and **nev
 
 `play_track` takes an optional `queue` + `index`; a bare track or a file-picker track collapses to a one-track queue so transport controls cannot report a stale queue from a previous selection.
 
-### Export Module (`export.rs`)
+### Export Module (`export.rs`) and filename templates (`export_template.rs`)
 
-Shared lyrics export to sidecar files (`.txt`, `.lrc`) and manual embedded metadata export. Automatic Download export calls the same `export_track` writers after successful internal save.
+Shared lyrics export to sidecar files and manual embedded metadata export. Automatic Download export calls the same writers after successful internal save.
 
 ```rust
 pub enum ExportFormat {
-    Txt,        // Plain text sidecar file
-    Lrc,        // Synced LRC sidecar file
+    Txt,        // Plain text sidecar file (.txt)
+    Lrc,        // Synced LRC sidecar file (.lrc), line-level
+    LrcA2,      // Enhanced LRC / A2 with inline word tags (.alrc) — Android
+    Ttml,       // TTML with one <span> per word (.ttml) — iOS
     Embedded,   // Embedded in audio metadata (MP3/FLAC)
 }
 
 pub struct ExportResult {
     pub format: ExportFormat,
     pub path: Option<PathBuf>,
-    pub success: bool,
-    pub message: String,
+    pub status: ExportStatus,   // Success | Skipped(reason) | Error(reason)
 }
 ```
 
 **Key Functions:**
-- `export_track()` - Export a single track to multiple formats
-- `export_track_format()` - Export to a specific format
+- `export_track()` / `export_track_with_template()` - Export a track to multiple formats
+- `export_track_with_embed_gate()` - Same, consulting `try_embed_lyrics` before each embedded write
+- `export_track_format_with_template()` - Export to a specific format
+- `plan_export()` - What the export *would* do, writing nothing (the dry run)
 - `embed_lyrics()` - Embed lyrics into MP3 (ID3v2 USLT/SYLT) or FLAC (Vorbis comments)
 
-**Note:** Sidecar exports retain their existing semantics: overwrite the selected target and attempt to delete the opposite extension before writing available content. Unavailable formats skip before deletion. Bulk export runs TXT, LRC, then embedded, so both successful sidecar operations normally leave only LRC. Failures do not roll back filesystem changes. Embedded exports use the existing `lofty` MP3/FLAC writers. The shared format boundary reports unsupported extensions as `Skipped` before touching the file. Both manual commands and automatic export use `export_track_with_embed_gate`, reading current `try_embed_lyrics` immediately before each embedded operation (read failures deny embedding). A disabled gate produces a format-level skip, including embed-only batches whose gate was disabled after submission; successful internal downloads retain their success string. Preference submission rejects zero effective formats and ignores embedded-choice updates while the gate is disabled. Supported-writer edge cases remain unchanged: MP3 requires an existing primary tag; FLAC without Vorbis comments currently performs no tag update.
+**Note:** Sidecar exports retain their existing semantics: overwrite the selected target and attempt to delete the opposite extension before writing available content. Unavailable formats skip before deletion. Bulk export runs TXT, LRC, then embedded, so both successful sidecar operations normally leave only LRC. Failures do not roll back filesystem changes — which is what `plan_export` exists to mitigate, by showing the deletions before they happen. Embedded exports use the existing `lofty` MP3/FLAC writers. The shared format boundary reports unsupported extensions as `Skipped` before touching the file. Both manual commands and automatic export use `export_track_with_embed_gate`, reading current `try_embed_lyrics` immediately before each embedded operation (read failures deny embedding). A disabled gate produces a format-level skip, including embed-only batches whose gate was disabled after submission; successful internal downloads retain their success string. Preference submission rejects zero effective formats and ignores embedded-choice updates while the gate is disabled. Supported-writer edge cases remain unchanged: MP3 requires an existing primary tag; FLAC without Vorbis comments currently performs no tag update.
+
+### Filename templates (`export_template.rs`)
+
+Where a sidecar is written used to be hardcoded to the audio file's stem: `01. Song.mp3` always produced `01. Song.lrc`. A template is a relative path with `{variable}` placeholders, resolved against the audio file's own directory, so a template can only ever place a sidecar beside the track or in a subfolder of it:
+
+```
+{filename}.{ext}                                         # the default, = the old behaviour
+{artist}/{album}/{track_number_padded} - {title}.lrc
+lyrics/{title_sanitized}.{ext}
+```
+
+**Variables:** `title`, `artist`, `album`, `album_artist`, `track_number`, `track_number_padded`, `filename` (the audio file's stem) and `ext` (the format's own extension).
+
+**The `_sanitized` suffix.** Sanitising is opt-in per variable, not always-on: `{title_sanitized}` replaces the characters a filesystem refuses (backslash, `/`, `:`, `*`, `?`, quotes, `<>`, `|` and control characters) with `_`, while `{title}` keeps them. A template that builds a directory must not be sanitised — a sanitised `lyrics/` stops being a path — and literal text in a template is never touched, for the same reason.
+
+**Validation.** `ExportTemplate::parse()` rejects an unknown variable, an unclosed brace, an absolute path (POSIX `/` and Windows `C:`) and `..`. It runs when the template is saved (`db::set_export_preferences`), so a typo is caught at the point of entry rather than on the fiftieth track of a batch. `ensure_extension()` appends the extension when the template omits it and is idempotent, so an explicit `.lrc` is not doubled.
+
+**Path resolution is pure.** `build_sidecar_path_for_track()` creates nothing; the writer (`write_sidecar`) creates the parent directories a template asks for. That split is what lets `plan_export` name a path without touching the filesystem.
+
+**CLI:** `sing-along export <path> --template '<pattern>'`. The GUI saves the template with the other export preferences and validates it on submit, restoring the stored text when the backend refuses it.
+
+### Migration v26
+
+`export_template TEXT NOT NULL DEFAULT ''` on `config_data`. Empty means the default `{filename}.{ext}`, which is the behaviour that was hardcoded before the column existed.
 
 ### LRC Parser (`parser/lrc.rs`)
 

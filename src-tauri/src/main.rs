@@ -6,6 +6,7 @@
 #[cfg(feature = "gui")]
 pub mod db;
 pub mod export;
+pub mod export_template;
 #[cfg(feature = "gui")]
 pub mod library;
 pub mod lrclib;

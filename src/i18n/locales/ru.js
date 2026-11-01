@@ -158,6 +158,12 @@ export default {
     wordNone: 'Не экспортировать пословно',
     a2: 'Enhanced LRC / A2 (.alrc) — Android',
     ttml: 'TTML (.ttml) — iOS',
+    fileName: 'Имя файла',
+    fileNamePlaceholder: 'напр. {artist}/{title}.{ext}',
+    fileNameHint: 'Переменные: {title} {artist} {album} {album_artist} {track_number} {filename} {ext}. Добавьте _sanitized, чтобы заменить недопустимые символы. Папки — через /.',
+    dryRun: 'Только предпросмотр — показать, что будет записано, ничего не записывать',
+    dryRunHint: 'Показывает, что произойдёт, не записывая и не удаляя ничего. Каждая запись сначала удаляет другое расширение, так что это позволяет проверить перед пакетом.',
+    preview: 'Предпросмотр',
   },
 
   downloadOptions: {

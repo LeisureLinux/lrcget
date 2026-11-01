@@ -154,6 +154,12 @@ export default {
     wordNone: 'No exportar palabra por palabra',
     a2: 'Enhanced LRC / A2 (.alrc) — Android',
     ttml: 'TTML (.ttml) — iOS',
+    fileName: 'Nombre del archivo',
+    fileNamePlaceholder: 'p. ej. {artist}/{title}.{ext}',
+    fileNameHint: 'Variables: {title} {artist} {album} {album_artist} {track_number} {filename} {ext}. Añade _sanitized a cualquiera para reemplazar caracteres no válidos. Usa / para carpetas.',
+    dryRun: 'Solo vista previa — muestra lo que se escribiría, sin escribir',
+    dryRunHint: 'Muestra lo que ocurriría, sin escribir ni borrar nada. Cada escritura borra antes la otra extensión, así que esto permite comprobarlo antes de un lote.',
+    preview: 'Vista previa',
   },
 
   downloadOptions: {

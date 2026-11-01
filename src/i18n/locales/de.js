@@ -154,6 +154,12 @@ export default {
     wordNone: 'Nicht wortgenau exportieren',
     a2: 'Enhanced LRC / A2 (.alrc) — Android',
     ttml: 'TTML (.ttml) — iOS',
+    fileName: 'Dateiname',
+    fileNamePlaceholder: 'z. B. {artist}/{title}.{ext}',
+    fileNameHint: 'Variablen: {title} {artist} {album} {album_artist} {track_number} {filename} {ext}. An jede kann _sanitized angehängt werden, um dateisystem-unkritische Zeichen zu ersetzen. Ordner mit /.',
+    dryRun: 'Nur Vorschau — zeigen, was geschrieben würde, nichts schreiben',
+    dryRunHint: 'Zeigt, was passieren würde, ohne zu schreiben oder zu löschen. Ein Sidecar-Schreiben entfernt zuerst die andere Endung — so lässt sich das vor einem Stapellauf prüfen.',
+    preview: 'Vorschau',
   },
 
   downloadOptions: {

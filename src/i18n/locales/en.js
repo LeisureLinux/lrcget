@@ -157,6 +157,12 @@ export default {
     wordNone: 'Do not export word-level',
     a2: 'Enhanced LRC / A2 (.alrc) — Android',
     ttml: 'TTML (.ttml) — iOS',
+    fileName: 'File name',
+    fileNamePlaceholder: 'e.g. {artist}/{title}.{ext}',
+    fileNameHint: 'Variables: {title} {artist} {album} {album_artist} {track_number} {filename} {ext}. Append _sanitized to any of them to replace filesystem-unsafe characters. Use / for folders.',
+    dryRun: 'Preview only — show what would be written, write nothing',
+    dryRunHint: 'Show what would happen, without writing or deleting anything. A sidecar write removes the other extension first, so this is how to check before a batch runs.',
+    preview: 'Preview',
   },
 
   downloadOptions: {

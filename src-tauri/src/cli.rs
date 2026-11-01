@@ -40,7 +40,16 @@ FETCH OPTIONS:
 EXPORT OPTIONS:
     --for <player>                  Target player; see `sing-along formats`
     --format <a2|lrc|ttml|txt>      Explicit format instead of --for
+    --template <pattern>            Output name, e.g. '{artist}/{title}.{ext}'
     --dry-run                       Show what would be written
+
+TEMPLATE VARIABLES:
+    {title} {artist} {album} {album_artist} {track_number}
+    {track_number_padded} {filename} {ext}
+    Add _sanitized to any of them to replace filesystem-unsafe characters,
+    e.g. {title_sanitized}. Directories are made with /, so a template can
+    place lyrics beside the track or in a subfolder of it. The default is
+    {filename}.{ext}, which is the audio file's own name.
 
 UPDATE OPTIONS:
     --check                         Report only; same as running `update` alone
@@ -166,7 +175,7 @@ fn print_formats() {
 
 /// Split argv into positional paths and `--flag value` pairs.
 fn parse_args(args: &[String]) -> (Vec<String>, HashMap<String, String>) {
-    const VALUED: [&str; 4] = ["script", "for", "format", "proxy"];
+    const VALUED: [&str; 5] = ["script", "for", "format", "proxy", "template"];
 
     let mut paths = Vec::new();
     let mut flags = HashMap::new();
@@ -411,6 +420,16 @@ fn export_command(args: &[String]) -> Result<()> {
     };
 
     let dry_run = flags.contains_key("dry-run");
+    // A template flag is the only way to change the output name from the CLI;
+    // the GUI has the settings panel. An invalid one is refused here, before
+    // anything is written, because the error names the variable that is wrong.
+    let template = match flags.get("template") {
+        Some(raw) if !raw.trim().is_empty() => {
+            crate::export_template::ExportTemplate::parse(raw)
+                .with_context(|| format!("invalid --template: {raw}"))?
+        }
+        _ => crate::export_template::ExportTemplate::default(),
+    };
     let tracks = collect_tracks(&paths)?;
 
     let mut written = 0usize;
@@ -427,39 +446,55 @@ fn export_command(args: &[String]) -> Result<()> {
         let raw = std::fs::read_to_string(&sidecar)
             .with_context(|| format!("reading {}", sidecar.display()))?;
         let parsed = parse_sidecar(&raw)?;
+        let persistent = to_persistent(track);
 
-        let result = if dry_run {
-            export::build_sidecar_path(&track.file_path, format_extension(format))
-                .map(|target| (target, ExportStatus::Success))
-                .map_err(|err| err.to_string())
+        // Both branches produce `(path, outcome)`. The dry run resolves the same
+        // paths the write would and touches nothing, which is the whole point of
+        // it; the plan's action string already reads "write <path>".
+        let (target, outcome) = if dry_run {
+            match export::plan_export(&persistent, &parsed, &[format], &template)
+                .into_iter()
+                .next()
+            {
+                Some(plan) => (
+                    plan.path.unwrap_or_else(|| PathBuf::from(&track.file_path)),
+                    plan.action,
+                ),
+                None => (PathBuf::from(&track.file_path), "nothing to export".to_owned()),
+            }
         } else {
-            let persistent = to_persistent(track);
-            export::export_track_format(&persistent, &parsed, format)
-                .map(|result| {
-                    (
-                        result.path.unwrap_or_else(|| PathBuf::from(&track.file_path)),
-                        result.status,
-                    )
-                })
-                .map_err(|err| err.to_string())
+            let (path, status) = match export::export_track_format_with_template(
+                &persistent,
+                &parsed,
+                format,
+                &template,
+            ) {
+                Ok(result) => (
+                    result.path.unwrap_or_else(|| PathBuf::from(&track.file_path)),
+                    match result.status {
+                        ExportStatus::Success => "written".to_owned(),
+                        ExportStatus::Skipped(reason) => format!("skipped: {reason}"),
+                        ExportStatus::Error(reason) => format!("failed: {reason}"),
+                    },
+                ),
+                Err(err) => (PathBuf::from(&track.file_path), format!("failed: {err}")),
+            };
+            (path, status)
         };
 
-        match result {
-            Ok((target, ExportStatus::Success)) => {
-                written += 1;
-                println!("{}  {}", if dry_run { "would write" } else { "wrote     " }, target.display());
-            }
-            Ok((_, ExportStatus::Skipped(reason))) => {
-                println!("skipped  {}: {reason}", track.file_path);
-            }
-            Ok((_, ExportStatus::Error(reason))) => {
-                failed += 1;
-                eprintln!("failed   {}: {reason}", track.file_path);
-            }
-            Err(err) => {
-                failed += 1;
-                eprintln!("failed   {}: {err}", track.file_path);
-            }
+        if dry_run {
+            println!("would {outcome}");
+            continue;
+        }
+
+        if outcome.starts_with("written") {
+            written += 1;
+            println!("wrote     {}", target.display());
+        } else if outcome.starts_with("skipped") {
+            println!("skipped  {}: {outcome}", track.file_path);
+        } else {
+            failed += 1;
+            eprintln!("failed   {}: {outcome}", track.file_path);
         }
     }
 

@@ -174,6 +174,7 @@ async fn set_config(
     ytdlp_binary: String,
     ytdlp_cookies_json: String,
     ytdlp_output_dir: String,
+    export_template: String,
     app_state: State<'_, AppState>,
 ) -> Result<(), String> {
     let conn_guard = app_state.db.lock().unwrap();
@@ -193,6 +194,7 @@ async fn set_config(
         &ytdlp_binary,
         &ytdlp_cookies_json,
         &ytdlp_output_dir,
+        &export_template,
         conn,
     )
     .map_err(|err| err.to_string())?;
@@ -221,6 +223,7 @@ async fn set_export_preferences(
     export_embedded: Option<bool>,
     skip_tracks_with_synced_lyrics: Option<bool>,
     skip_tracks_with_plain_lyrics: Option<bool>,
+    export_template: Option<String>,
     app_state: State<'_, AppState>,
 ) -> Result<PersistentConfig, String> {
     let conn_guard = app_state.db.lock().unwrap();
@@ -232,6 +235,7 @@ async fn set_export_preferences(
         export_embedded,
         skip_tracks_with_synced_lyrics,
         skip_tracks_with_plain_lyrics,
+        export_template.as_deref(),
         conn,
     )
     .map_err(|err| err.to_string())?;
@@ -952,9 +956,14 @@ pub(crate) async fn download_lyrics_for_track(
 
     // Internal save has succeeded: export errors remain part of the success log string.
     Ok(match export_formats {
-        Some(formats) => download_export_message(&message, &track, &lyricsfile_content, &formats, || {
-            embedding_allowed(&app_handle)
-        }),
+        Some(formats) => download_export_message(
+            &message,
+            &track,
+            &lyricsfile_content,
+            &formats,
+            &export_template(app_handle),
+            || embedding_allowed(app_handle),
+        ),
         None => message.to_owned(),
     })
 }
@@ -964,6 +973,7 @@ fn download_export_message(
     track: &PersistentTrack,
     content: &str,
     formats: &[crate::export::ExportFormat],
+    template: &crate::export_template::ExportTemplate,
     embed_allowed: impl FnMut() -> bool,
 ) -> String {
     let parsed = match crate::lyricsfile::parse_lyricsfile(content) {
@@ -971,7 +981,9 @@ fn download_export_message(
         Err(err) => return format!("{message}; export failed: {err}"),
     };
     let mut message = message.to_owned();
-    for result in crate::export::export_track_with_embed_gate(track, &parsed, formats, embed_allowed) {
+    for result in
+        crate::export::export_track_with_embed_gate(track, &parsed, formats, template, embed_allowed)
+    {
         let format = match result.format {
             crate::export::ExportFormat::Txt => "TXT",
             crate::export::ExportFormat::Lrc => "LRC",
@@ -995,6 +1007,21 @@ fn embedding_allowed(app_handle: &AppHandle) -> bool {
         .db(crate::db::get_config)
         .map(|config| config.try_embed_lyrics)
         .unwrap_or(false)
+}
+
+/// The sidecar template to export with.
+///
+/// Read from the config each time rather than passed in: a batch holds the
+/// device open for its whole run, and a template changed in the settings panel
+/// should take effect on the next batch rather than the next restart. An
+/// unparseable template falls back to the default here; the write path reports
+/// the same error per track, which is where the user can see which file it was.
+fn export_template(app_handle: &AppHandle) -> crate::export_template::ExportTemplate {
+    let raw = app_handle
+        .db(crate::db::get_config)
+        .map(|config| config.export_template)
+        .unwrap_or_default();
+    crate::export_template::ExportTemplate::parse(&raw).unwrap_or_default()
 }
 
 #[tauri::command]
@@ -1942,9 +1969,13 @@ async fn export_lyrics(
         crate::lyricsfile::parse_lyricsfile(&lyricsfile_content).map_err(|err| err.to_string())?;
     let export_formats = formats.into_iter().map(Into::into).collect::<Vec<_>>();
 
-    Ok(crate::export::export_track_with_embed_gate(&track, &parsed, &export_formats, || {
-        embedding_allowed(&app_handle)
-    }))
+    Ok(crate::export::export_track_with_embed_gate(
+        &track,
+        &parsed,
+        &export_formats,
+        &export_template(&app_handle),
+        || embedding_allowed(&app_handle),
+    ))
 }
 
 /// Detail for a single format export result
@@ -2009,9 +2040,13 @@ async fn export_track_lyrics(
         .map_err(|err| err.to_string())?;
     let export_formats = formats.into_iter().map(Into::into).collect::<Vec<_>>();
 
-    let results = crate::export::export_track_with_embed_gate(&track, &parsed, &export_formats, || {
-        embedding_allowed(&app_handle)
-    });
+    let results = crate::export::export_track_with_embed_gate(
+        &track,
+        &parsed,
+        &export_formats,
+        &export_template(&app_handle),
+        || embedding_allowed(&app_handle),
+    );
 
     // Count results based on status
     let exported = results
@@ -2076,6 +2111,48 @@ async fn export_track_lyrics(
         message,
         details,
     })
+}
+
+/// What an export would do, without doing it.
+///
+/// A bulk export is destructive in a way it cannot undo: each sidecar write
+/// removes the opposite extension first, so a batch that fails halfway leaves
+/// the user with fewer files than they started with. Showing the plan first
+/// turns that from a surprise into a decision.
+///
+/// The same formats the real export takes are accepted, so the two can be run
+/// against each other; the embed gate is *not* consulted here, because the
+/// question "would this work?" is answered better by "yes, if you enable it".
+#[tauri::command]
+async fn plan_export_lyrics(
+    track_id: i64,
+    formats: Vec<ExportLyricsFormat>,
+    app_handle: AppHandle,
+) -> Result<Vec<crate::export::ExportPlan>, String> {
+    if formats.is_empty() {
+        return Err("Select at least one export format".to_owned());
+    }
+
+    let track = app_handle
+        .db(|db| crate::db::get_track_by_id(track_id, db))
+        .map_err(|err| err.to_string())?;
+
+    let lyricsfile_content = track
+        .lyricsfile
+        .clone()
+        .filter(|content| !content.trim().is_empty())
+        .ok_or_else(|| "No lyrics available for export".to_owned())?;
+
+    let parsed = crate::lyricsfile::parse_lyricsfile(&lyricsfile_content)
+        .map_err(|err| err.to_string())?;
+    let export_formats = formats.into_iter().map(Into::into).collect::<Vec<_>>();
+
+    Ok(crate::export::plan_export(
+        &track,
+        &parsed,
+        &export_formats,
+        &export_template(&app_handle),
+    ))
 }
 
 #[tauri::command]
@@ -2512,6 +2589,7 @@ pub fn run() {
             // publish_lyrics,
             export_lyrics,
             export_track_lyrics,
+            plan_export_lyrics,
             get_track_ids_with_lyrics,
             play_track,
             select_track,
@@ -2806,7 +2884,7 @@ mod auto_export_tests {
             std::fs::write(&path, bytes).unwrap();
             let track = test_track(&path);
             // A disabled gate never reaches the writer, even for a valid audio file.
-            let result = crate::export::export_track_with_embed_gate(&track, &parsed, &[Embedded], || false);
+            let result = crate::export::export_track_with_embed_gate(&track, &parsed, &[Embedded], &crate::export_template::ExportTemplate::default(), || false);
             assert!(
                 matches!(&result[0].status, ExportStatus::Skipped(reason) if reason.contains("disabled"))
             );
@@ -2836,7 +2914,7 @@ mod auto_export_tests {
             &track,
             &content,
             &[Embedded],
-            || true,
+            &crate::export_template::ExportTemplate::default(), || true,
         );
         assert!(result.starts_with("Plain lyrics saved; Embedded export skipped: unsupported"));
         assert_eq!(std::fs::read(&path).unwrap(), bytes);
@@ -2845,7 +2923,7 @@ mod auto_export_tests {
         let track = test_track(&directory.join("song.MP3"));
         let mut enabled = true;
         let result =
-            crate::export::export_track_with_embed_gate(&track, &parsed, &[Embedded, Embedded], || {
+            crate::export::export_track_with_embed_gate(&track, &parsed, &[Embedded, Embedded], &crate::export_template::ExportTemplate::default(), || {
                 let current = enabled;
                 enabled = false;
                 current
@@ -2858,7 +2936,7 @@ mod auto_export_tests {
             &track,
             &content,
             &[Embedded],
-            || false,
+            &crate::export_template::ExportTemplate::default(), || false,
         );
         assert!(result.starts_with("Plain lyrics saved; Embedded export skipped: experimental"));
         assert_eq!(std::fs::read(&track.file_path).unwrap(), before);
@@ -2937,7 +3015,7 @@ mod auto_export_tests {
         let formats = [crate::export::ExportFormat::Txt, crate::export::ExportFormat::Lrc];
         std::fs::write(directory.join("song.lrc"), "old lyrics").unwrap();
         let result =
-            download_export_message("Lyrics synced", &track, &content, &formats, || true);
+            download_export_message("Lyrics synced", &track, &content, &formats, &crate::export_template::ExportTemplate::default(), || true);
         assert_eq!(
             result,
             "Lyrics synced; TXT export completed; LRC export completed"
@@ -2953,17 +3031,17 @@ mod auto_export_tests {
             None,
         )
         .unwrap();
-        let result = download_export_message("Plain lyrics saved", &track, &plain, &formats, || true);
+        let result = download_export_message("Plain lyrics saved", &track, &plain, &formats, &crate::export_template::ExportTemplate::default(), || true);
         assert_eq!(result, "Plain lyrics saved; TXT export completed; LRC export skipped: no timed lyrics to export");
         assert!(directory.join("song.txt").exists());
         // A directory at the LRC target deterministically fails writing, even when tests run as root.
         std::fs::create_dir(directory.join("song.lrc")).unwrap();
         let result =
-            download_export_message("Lyrics synced", &track, &content, &formats, || true);
+            download_export_message("Lyrics synced", &track, &content, &formats, &crate::export_template::ExportTemplate::default(), || true);
         assert!(result
             .starts_with("Lyrics synced; TXT export completed; LRC export failed:"));
         assert!(!directory.join("song.txt").exists()); // Existing destructive semantics are retained.
-        let result = download_export_message("Lyrics downloaded", &track, "[invalid", &formats, || true);
+        let result = download_export_message("Lyrics downloaded", &track, "[invalid", &formats, &crate::export_template::ExportTemplate::default(), || true);
         assert!(result.starts_with("Lyrics downloaded; export failed:"));
         std::fs::remove_dir_all(directory).unwrap();
     }

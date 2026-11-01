@@ -130,9 +130,30 @@ The Download popup also drafts the three existing Configuration “Download lyri
 
 Shared fields are `export_txt`, `export_lrc`, and `export_embedded`. `auto_export_enabled` belongs only to Download. Download updates applicable format choices when enabled; turning it off preserves all formats. Manual Export does not update the toggle. Both popups show the embedded choice under the experimental `try_embed_lyrics` gate and preserve its remembered value when disabled. Defaults: auto-export off, LRC selected, TXT/embedded off. Automatic export accepts embed-only batches when the gate is enabled; at least one effective format is required.
 
+The manual Export popup also carries two fields of its own:
+
+- **File name** — the `{variable}` template a sidecar is written with (see *Export filename templates* below). It is saved with the other export preferences, but on its own submit, so a template the backend rejects leaves the popup open on its own error and restores the stored text rather than starting the batch.
+- **Preview only** — resolves the export for one track through `plan_export_lyrics` and reports what it would do, without writing or deleting anything. A sidecar write removes the opposite extension first, so this is where a template pointing at the wrong folder is caught before a batch runs.
+
 `downloader.js` queues `{ trackId, autoExport }` entries; `autoExport` is an immutable TXT/LRC/embedded snapshot or null. The album/artist row actions (`AlbumItem.vue`, `ArtistItem.vue`) and detail actions (`AlbumTrackList.vue`, `ArtistTrackList.vue`) use the same popup and snapshots as Download All. Scope queries use `get_album_track_ids` / `get_artist_track_ids` with the submitted skip flags; library-wide queries retain their existing presence filters. Single-track Download, Apply, and editor saves are unchanged. `export.js` queues `{ trackId, formats }` with immutable ordered TXT/LRC/embedded selections. Subsequent submissions cannot mutate queued batches.
 
 `download_lyrics` still returns a string. Post-save export failures are appended to that string and stay on the existing green success/FOUND log path in `DownloadViewer.vue`. No reporting UI or retry flow is added. The shared writers still overwrite targets and delete the opposite sidecar; format-operation success does not imply both files remain.
+
+### Export filename templates
+
+Where an exported sidecar lands used to be hardcoded to the audio file's stem: `01. Song.mp3` always produced `01. Song.lrc`. The manual Export popup now carries a **File name** field holding a relative path with `{variable}` placeholders, resolved against the audio file's own directory:
+
+```
+{filename}.{ext}                                         # the default, = the old behaviour
+{artist}/{album}/{track_number_padded} - {title}.lrc
+lyrics/{title_sanitized}.{ext}
+```
+
+**Variables:** `title`, `artist`, `album`, `album_artist`, `track_number`, `track_number_padded`, `filename` (the audio file's stem) and `ext` (the format's own extension). Append `_sanitized` to any of them to replace filesystem-unsafe characters. Directories are made with `/`.
+
+**Validation is the backend's.** `plan_export_lyrics` and the writers both resolve the template server-side, and an unknown variable is refused by `set_export_preferences` before it is stored. `LibraryHeader.vue` submits the template separately from the format checkboxes so a rejected one shows its own error and restores the stored text, instead of failing the whole submission. `export-workflows.test.js` covers both paths.
+
+**Preview only.** `plan_export_lyrics(trackId, formats)` returns what each format would do — the resolved path, or the reason it skips — and writes nothing. The popup shows the first entry, which is enough to answer \"is this template pointing where I think?\"; the point is to check before a batch, not to enumerate it.
 
 ### Downloading from YouTube
 

@@ -154,6 +154,12 @@ export default {
     wordNone: 'ไม่ส่งออกระดับคำ',
     a2: 'Enhanced LRC / A2 (.alrc) — Android',
     ttml: 'TTML (.ttml) — iOS',
+    fileName: 'ชื่อไฟล์',
+    fileNamePlaceholder: 'ตัวอย่าง {artist}/{title}.{ext}',
+    fileNameHint: 'ตัวแปร: {title} {artist} {album} {album_artist} {track_number} {filename} {ext} เติม _sanitized ต่อท้ายเพื่อแทนอักขระที่ไฟล์ระบบไม่รับ โดยใช้ / สร้างโฟลเดอร์',
+    dryRun: 'ดูตัวอย่างเท่านั้น — แสดงว่าจะเขียนอะไร โดยไม่เขียนจริง',
+    dryRunHint: 'แสดงว่าจะเกิดอะไร โดยไม่เขียนหรือลบอะไรเลย เพราะการเขียนไฟล์คำร้องจะลบนามสกุลอีกตัวก่อน จึงตรวจสอบก่อนทำงานแบบกลุ่มได้',
+    preview: 'ดูตัวอย่าง',
   },
 
   downloadOptions: {

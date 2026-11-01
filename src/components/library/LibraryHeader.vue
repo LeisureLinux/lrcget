@@ -231,9 +231,50 @@
                   <span class="dropdown-label">{{ $t('exportOptions.embedIntoTrack') }}</span>
                 </CheckboxButton>
               </label>
+
+              <div class="dropdown-section-label mt-2">
+                {{ $t('exportOptions.fileName') }}
+              </div>
+              <div class="px-2 pb-1">
+                <input
+                  v-model="exportDraft.template"
+                  type="text"
+                  class="input w-full text-sm"
+                  :placeholder="$t('exportOptions.fileNamePlaceholder')"
+                  :disabled="exportLoading || submittingExport"
+                  data-testid="export-template-input"
+                  @input="templateError = ''"
+                />
+                <p class="mt-1 text-[11px] leading-snug text-neutral-500 dark:text-neutral-400">
+                  {{ $t('exportOptions.fileNameHint') }}
+                </p>
+                <p v-if="templateError" role="alert" class="options-error">
+                  {{ templateError }}
+                </p>
+              </div>
+
+              <label class="dropdown-item">
+                <CheckboxButton
+                  id="export-dry-run"
+                  v-model="exportDraft.dryRun"
+                  name="export-dry-run"
+                  :disabled="exportLoading || submittingExport"
+                >
+                  <span class="dropdown-label">{{ $t('exportOptions.dryRun') }}</span>
+                </CheckboxButton>
+              </label>
+              <p class="px-2 pb-1 text-[11px] leading-snug text-neutral-500 dark:text-neutral-400">
+                {{ $t('exportOptions.dryRunHint') }}
+              </p>
             </fieldset>
             <p v-if="exportError" role="alert" class="options-error">
               {{ exportError }}
+            </p>
+            <p v-if="planError" role="alert" class="options-error">
+              {{ planError }}
+            </p>
+            <p v-if="planSummary" class="px-2 text-[11px] leading-snug text-neutral-600 dark:text-neutral-300">
+              {{ planSummary }}
             </p>
             <div class="px-2 py-2">
               <button
@@ -243,7 +284,7 @@
                 type="button"
                 @click="handleExportClick"
               >
-                {{ $t('actions.export') }}
+                {{ exportDraft.dryRun ? $t('exportOptions.preview') : $t('actions.export') }}
               </button>
             </div>
           </div>
@@ -301,6 +342,7 @@
 
 <script setup>
 import { ref, computed } from 'vue'
+import { invoke } from '@tauri-apps/api/core'
 import DownloadMultiple from '~icons/mdi/download-multiple'
 import Loading from '~icons/mdi/loading'
 import Check from '~icons/mdi/check'
@@ -345,7 +387,13 @@ const exportDraft = ref({
   syncedLrc: true,
   embedIntoTrack: false,
   wordFormat: 'none',
+  template: '',
+  dryRun: false,
 })
+const templateError = ref('')
+const savedTemplate = ref('')
+const planError = ref('')
+const planSummary = ref('')
 
 const setWordFormat = value => {
   exportDraft.value.wordFormat = value
@@ -362,6 +410,8 @@ const openDownloadOptions = useDownloadTrigger(() => ({ type: 'library' }))
 const openExportOptions = async () => {
   exportLoading.value = true
   exportError.value = ''
+  planError.value = ''
+  planSummary.value = ''
   try {
     const config = await refreshPreferences()
     exportDraft.value = {
@@ -371,12 +421,38 @@ const openExportOptions = async () => {
       // Format choice is per-batch, not persisted: which player you are
       // preparing files for is a property of this export run.
       wordFormat: exportDraft.value.wordFormat,
+      template: config.export_template || '',
+      dryRun: exportDraft.value.dryRun,
     }
     tryEmbedLyrics.value = config.try_embed_lyrics
+    savedTemplate.value = config.export_template || ''
   } catch (error) {
     exportError.value = String(error)
   } finally {
     exportLoading.value = false
+  }
+}
+
+// The template is saved with the other export preferences, but it is validated
+// on its own: an unknown variable is a typing mistake, and the backend rejects
+// it before anything is written. Showing it here rather than after a batch has
+// already run is the difference between one error and fifty.
+const submitTemplate = async () => {
+  const raw = exportDraft.value.template.trim()
+  if (raw === savedTemplate.value) {
+    templateError.value = ''
+    return
+  }
+  try {
+    await savePreferences({ exportTemplate: raw })
+    savedTemplate.value = raw
+    templateError.value = ''
+  } catch (error) {
+    templateError.value = String(error)
+    // Put the rejected text back so the user can see what was wrong rather
+    // than watching the field change under them.
+    exportDraft.value.template = savedTemplate.value
+    throw error
   }
 }
 
@@ -402,6 +478,18 @@ const handleExportClick = async () => {
       exportLrc: draft.syncedLrc,
       ...(embedEnabled ? { exportEmbedded: draft.embedIntoTrack } : {}),
     })
+    // The template is saved separately so a rejected one leaves the popup open
+    // on its own error instead of failing the whole submission.
+    await submitTemplate()
+
+    if (draft.dryRun) {
+      // A preview answers "what would this do?" without starting the batch, so
+      // the popup stays open and the answer is read in place. The real export
+      // hides the popup and reports through the viewer.
+      await previewExport(draft)
+      return
+    }
+
     exportDropdown.value?.hide()
     emit('exportAllLyrics', {
       ...draft,
@@ -409,9 +497,50 @@ const handleExportClick = async () => {
       wordFormat: draft.wordFormat,
     })
   } catch (error) {
-    exportError.value = String(error)
+    if (!templateError.value) exportError.value = String(error)
   } finally {
     submittingExport.value = false
+  }
+}
+
+// Resolve the export for one track and report what it would do.
+//
+// A batch is destructive in a way it cannot undo — each sidecar write removes
+// the opposite extension first — so the preview is the cheapest place to find
+// out that a template points at the wrong folder, or that nothing has timed
+// lyrics. One track is enough to answer both; the count is not the question.
+const previewExport = async draft => {
+  planError.value = ''
+  planSummary.value = ''
+  const formats = [
+    ...(draft.plainText ? ['txt'] : []),
+    ...(draft.syncedLrc ? ['lrc'] : []),
+    ...(draft.wordFormat === 'a2' ? ['lrcA2'] : []),
+    ...(draft.wordFormat === 'ttml' ? ['ttml'] : []),
+    ...(draft.embedIntoTrack && embedEnabled ? ['embedded'] : []),
+  ]
+  if (formats.length === 0) {
+    planError.value = 'Select at least one export format'
+    return
+  }
+  try {
+    const ids = await invoke('get_track_ids_with_lyrics')
+    const trackId = Array.isArray(ids) ? ids[0] : undefined
+    if (trackId === undefined) {
+      planSummary.value = 'No track in this library has lyrics to export.'
+      return
+    }
+    const plans = await invoke('plan_export_lyrics', { trackId, formats })
+    const writes = plans.filter(plan => plan.path)
+    const skips = plans.filter(plan => !plan.path)
+    planSummary.value = [
+      writes.length > 0 ? writes[0].action : null,
+      skips.length > 0 ? `skipped: ${skips[0].action}` : null,
+    ]
+      .filter(Boolean)
+      .join('; ')
+  } catch (error) {
+    planError.value = String(error)
   }
 }
 

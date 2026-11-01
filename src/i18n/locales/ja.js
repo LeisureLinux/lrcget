@@ -156,6 +156,12 @@ export default {
     wordNone: '単語単位では書き出さない',
     a2: 'Enhanced LRC / A2（.alrc）— Android',
     ttml: 'TTML（.ttml）— iOS',
+    fileName: 'ファイル名',
+    fileNamePlaceholder: '例: {artist}/{title}.{ext}',
+    fileNameHint: '変数: {title} {artist} {album} {album_artist} {track_number} {filename} {ext}。いずれも末尾に _sanitized を付けると、ファイルシステムで使えない文字を置き換えます。フォルダは / で作れます。',
+    dryRun: 'プレビューのみ — 何が書かれるかを表示し、書き込みはしない',
+    dryRunHint: '何が起こるかを表示します。書き込みも削除も行いません。歌詞ファイルの書き込みでは先に反対の拡張子を削除するため、一括実行前に確認できます。',
+    preview: 'プレビュー',
   },
 
   downloadOptions: {
